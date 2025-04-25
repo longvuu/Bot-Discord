@@ -1,4 +1,4 @@
-import { Client, IntentsBitField, Message, MessageReaction, PartialMessageReaction, User, PartialUser, Partials } from 'discord.js';
+import { Client, IntentsBitField, Message, MessageReaction, PartialMessageReaction, User, PartialUser, Partials, TextChannel } from 'discord.js';
 import * as dotenv from 'dotenv';
 import { config } from './config';
 import fs from 'fs';
@@ -45,7 +45,7 @@ interface ReactionCount {
 const reactionCounts: Map<string, ReactionCount[]> = new Map();
 
 // When the client is ready, run this code
-client.once('ready', () => {
+client.once('ready', async () => {
     console.log(`Logged in as ${client.user?.tag}!`);
     console.log(`Bot is ready to react to images in channel: ${config.targetChannelId}`);
     
@@ -58,7 +58,119 @@ client.once('ready', () => {
             console.log(`  - ${channel.name} (${channel.id})`);
         });
     });
+
+    // Load past messages and reactions
+    try {
+        await loadPastMessagesAndReactions();
+        console.log('Successfully loaded past messages and reactions');
+    } catch (error) {
+        console.error('Error loading past messages and reactions:', error);
+    }
 });
+
+/**
+ * Load past messages and reactions from the target channel
+ * This helps maintain reaction data across bot restarts
+ */
+async function loadPastMessagesAndReactions() {
+    console.log(`Loading past messages from channel: ${config.targetChannelId}...`);
+    
+    // Get the target channel
+    const channel = await client.channels.fetch(config.targetChannelId);
+    if (!channel || !(channel instanceof TextChannel)) {
+        console.error(`Failed to find target channel or channel is not a text channel`);
+        return;
+    }
+    
+    console.log(`Found target channel: ${channel.name}`);
+    
+    // Define how many past messages to load
+    const messageLimit = 100; // Adjust this number as needed
+    
+    // Fetch past messages
+    const messages = await channel.messages.fetch({ limit: messageLimit });
+    console.log(`Loaded ${messages.size} past messages`);
+    
+    // Process each message
+    for (const [messageId, message] of messages) {
+        // Skip bot messages
+        if (message.author.bot) continue;
+        
+        // Check if message has image attachments
+        if (message.attachments.size > 0) {
+            const hasImage = message.attachments.some(attachment => 
+                isImageAttachment(attachment.url)
+            );
+            
+            if (hasImage) {
+                console.log(`Found past image message: ${messageId}`);
+                
+                // Get all reactions on this message
+                const reactions = message.reactions.cache;
+                
+                // Add the message to our tracking map if it has reactions
+                if (reactions.size > 0) {
+                    const messageReactions: ReactionCount[] = [];
+                    
+                    // Process each reaction
+                    for (const [reactionEmoji, reaction] of reactions) {
+                        // Skip processing if the reaction is partial
+                        if (reaction.partial) continue;
+                        
+                        try {
+                            // Fetch users who reacted
+                            const users = await reaction.users.fetch();
+                            
+                            // Process each user's reaction
+                            for (const [userId, user] of users) {
+                                // Skip bot reactions
+                                if (user.bot) continue;
+                                
+                                // Add or update user's reaction count for this message
+                                const existingIndex = messageReactions.findIndex(r => r.userId === userId);
+                                if (existingIndex >= 0) {
+                                    messageReactions[existingIndex].count++;
+                                } else {
+                                    messageReactions.push({ userId, count: 1 });
+                                }
+                            }
+                        } catch (error) {
+                            console.error(`Error fetching reaction users for ${reactionEmoji}:`, error);
+                        }
+                    }
+                    
+                    // Only add to our tracking if we found valid reactions
+                    if (messageReactions.length > 0) {
+                        reactionCounts.set(messageId, messageReactions);
+                        console.log(`Added ${messageReactions.length} user reactions for message ${messageId}`);
+                    }
+                }
+                
+                // React with emojis if the bot hasn't already reacted
+                for (const emoji of config.reactions) {
+                    if (!message.reactions.cache.has(emoji)) {
+                        try {
+                            await message.react(emoji);
+                            // Add delay to avoid rate limits
+                            await new Promise(resolve => setTimeout(resolve, 300));
+                        } catch (error) {
+                            console.error(`Error reacting to past message with ${emoji}:`, error);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Log summary
+    const totalMessages = reactionCounts.size;
+    let totalReactions = 0;
+    reactionCounts.forEach(reactions => {
+        totalReactions += reactions.length;
+    });
+    
+    console.log(`Finished loading past data - Tracking ${totalMessages} messages with ${totalReactions} user reactions`);
+}
 
 // Listen for new messages
 client.on('messageCreate', async (message: Message) => {
@@ -165,8 +277,13 @@ client.on('messageReactionAdd', async (reaction: MessageReaction | PartialMessag
     }
 
     // Now reaction should be a full MessageReaction
-    // Check if the reaction is in the target channel
-    if (reaction.message.channelId === config.targetChannelId) {
+    // Check if the reaction is in the target channel (1364771923116163093)
+    const channelId = reaction.message.channelId;
+    console.log(`Reaction detected in channel: ${channelId}, target channel: ${config.targetChannelId}`);
+    
+    if (channelId === config.targetChannelId) {
+        console.log(`Counting reaction in target channel: ${config.targetChannelId}`);
+        
         // Track this reaction
         const messageId = reaction.message.id;
         if (!reactionCounts.has(messageId)) {
@@ -178,9 +295,13 @@ client.on('messageReactionAdd', async (reaction: MessageReaction | PartialMessag
 
         if (userIndex >= 0) {
             messageReactions[userIndex].count++;
+            console.log(`Incremented reaction count for user ${user.id} to ${messageReactions[userIndex].count}`);
         } else {
             messageReactions.push({ userId: user.id, count: 1 });
+            console.log(`Added first reaction for user ${user.id}`);
         }
+    } else {
+        console.log(`Ignoring reaction in channel ${channelId} - not the target channel`);
     }
 });
 
