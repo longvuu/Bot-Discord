@@ -83,15 +83,20 @@ client.once('ready', () => __awaiter(void 0, void 0, void 0, function* () {
     var _a;
     console.log(`Logged in as ${(_a = client.user) === null || _a === void 0 ? void 0 : _a.tag}!`);
     console.log(`Bot is ready to react to images in channel: ${config_1.config.targetChannelId}`);
-    // Log all available guilds and channels for debugging
-    console.log('Available guilds:');
-    client.guilds.cache.forEach(guild => {
-        console.log(`- ${guild.name} (${guild.id})`);
-        console.log('  Channels:');
-        guild.channels.cache.forEach(channel => {
-            console.log(`  - ${channel.name} (${channel.id})`);
-        });
-    });
+    // Chỉ log thông tin về kênh mục tiêu
+    try {
+        const targetChannel = yield client.channels.fetch(config_1.config.targetChannelId);
+        if (targetChannel && targetChannel instanceof discord_js_1.TextChannel) {
+            console.log(`Target channel: ${targetChannel.name} (${targetChannel.id})`);
+            console.log(`Guild: ${targetChannel.guild.name} (${targetChannel.guild.id})`);
+        }
+        else {
+            console.error(`Target channel not found or not a text channel!`);
+        }
+    }
+    catch (error) {
+        console.error(`Error fetching target channel:`, error);
+    }
     // Load past messages and reactions
     try {
         yield loadPastMessagesAndReactions();
@@ -195,89 +200,105 @@ function loadPastMessagesAndReactions() {
 }
 // Listen for new messages
 client.on('messageCreate', (message) => __awaiter(void 0, void 0, void 0, function* () {
-    var _a;
-    // Log all incoming messages for debugging
-    console.log(`New message in channel ${message.channelId}: ${message.content.substring(0, 20)}${message.content.length > 20 ? '...' : ''}`);
+    var _a, _b;
+    // Bỏ qua tất cả tin nhắn không thuộc kênh mục tiêu
+    if (message.channelId !== config_1.config.targetChannelId) {
+        // Chỉ xử lý lệnh nếu có prefix, bất kể kênh nào
+        if (message.content.startsWith(config_1.config.prefix)) {
+            const args = message.content.slice(config_1.config.prefix.length).trim().split(/ +/);
+            const commandName = (_a = args.shift()) === null || _a === void 0 ? void 0 : _a.toLowerCase();
+            // If no command is found, return
+            if (!commandName)
+                return;
+            // Check if the command exists
+            if (!commands.has(commandName))
+                return;
+            try {
+                // Execute the command
+                commands.get(commandName).execute(message, args, { reactionCounts });
+            }
+            catch (error) {
+                console.error(error);
+                message.reply('There was an error trying to execute that command!');
+            }
+        }
+        return;
+    }
+    // Từ đây chỉ xử lý tin nhắn trong kênh mục tiêu
+    console.log(`New message in target channel: ${message.content.substring(0, 20)}${message.content.length > 20 ? '...' : ''}`);
     console.log(`Attachments: ${message.attachments.size}`);
     // Ignore bot messages
     if (message.author.bot) {
         console.log('Ignoring bot message');
         return;
     }
-    // Check if message is in the target channel
-    if (message.channelId === config_1.config.targetChannelId) {
-        console.log(`Message is in target channel ${config_1.config.targetChannelId}`);
-        // Check if the message contains an image
-        if (message.attachments.size > 0) {
-            console.log(`Message has ${message.attachments.size} attachments`);
-            const attachment = message.attachments.first();
-            console.log(`Attachment URL: ${attachment === null || attachment === void 0 ? void 0 : attachment.url}`);
-            if (attachment && isImageAttachment(attachment.url)) {
-                console.log(`Attachment is an image, will react with emojis`);
-                // Add a small delay before reacting to ensure the message is fully processed by Discord
-                yield new Promise(resolve => setTimeout(resolve, 500));
-                // Check if message still exists before reacting
-                try {
-                    // Try to fetch the message to ensure it exists
-                    yield message.fetch();
-                    // React with all configured emojis
-                    for (const reaction of config_1.config.reactions) {
-                        try {
-                            console.log(`Reacting with ${reaction}`);
-                            yield message.react(reaction);
-                            // Add a small delay between reactions to avoid rate limits
-                            yield new Promise(resolve => setTimeout(resolve, 300));
-                            console.log(`Successfully reacted with ${reaction}`);
-                        }
-                        catch (error) {
-                            if (error.code === 10008) {
-                                console.error(`Message no longer exists, stopping reactions`);
-                                break; // Stop trying more reactions if message is gone
-                            }
-                            else {
-                                console.error(`Error reacting with ${reaction}:`, error);
-                            }
-                        }
+    // Check if the message contains an image
+    if (message.attachments.size > 0) {
+        console.log(`Message has ${message.attachments.size} attachments`);
+        const attachment = message.attachments.first();
+        console.log(`Attachment URL: ${attachment === null || attachment === void 0 ? void 0 : attachment.url}`);
+        if (attachment && isImageAttachment(attachment.url)) {
+            console.log(`Attachment is an image, will react with emojis`);
+            // Add a small delay before reacting to ensure the message is fully processed by Discord
+            yield new Promise(resolve => setTimeout(resolve, 500));
+            // Check if message still exists before reacting
+            try {
+                // Try to fetch the message to ensure it exists
+                yield message.fetch();
+                // React with all configured emojis
+                for (const reaction of config_1.config.reactions) {
+                    try {
+                        console.log(`Reacting with ${reaction}`);
+                        yield message.react(reaction);
+                        // Add a small delay between reactions to avoid rate limits
+                        yield new Promise(resolve => setTimeout(resolve, 300));
+                        console.log(`Successfully reacted with ${reaction}`);
                     }
-                }
-                catch (error) {
-                    if (error.code === 10008) {
-                        console.error(`Message no longer exists, cannot react`);
-                    }
-                    else {
-                        console.error(`Error fetching message:`, error);
+                    catch (error) {
+                        if (error.code === 10008) {
+                            console.error(`Message no longer exists, stopping reactions`);
+                            break; // Stop trying more reactions if message is gone
+                        }
+                        else {
+                            console.error(`Error reacting with ${reaction}:`, error);
+                        }
                     }
                 }
             }
-            else {
-                console.log('Attachment is not an image');
+            catch (error) {
+                if (error.code === 10008) {
+                    console.error(`Message no longer exists, cannot react`);
+                }
+                else {
+                    console.error(`Error fetching message:`, error);
+                }
             }
         }
         else {
-            console.log('Message has no attachments');
+            console.log('Attachment is not an image');
         }
     }
     else {
-        console.log(`Message is NOT in target channel. Message channel: ${message.channelId}, Target channel: ${config_1.config.targetChannelId}`);
+        console.log('Message has no attachments');
     }
     // Check for command prefix
-    if (!message.content.startsWith(config_1.config.prefix))
-        return;
-    const args = message.content.slice(config_1.config.prefix.length).trim().split(/ +/);
-    const commandName = (_a = args.shift()) === null || _a === void 0 ? void 0 : _a.toLowerCase();
-    // If no command is found, return
-    if (!commandName)
-        return;
-    // Check if the command exists
-    if (!commands.has(commandName))
-        return;
-    try {
-        // Execute the command
-        commands.get(commandName).execute(message, args, { reactionCounts });
-    }
-    catch (error) {
-        console.error(error);
-        message.reply('There was an error trying to execute that command!');
+    if (message.content.startsWith(config_1.config.prefix)) {
+        const args = message.content.slice(config_1.config.prefix.length).trim().split(/ +/);
+        const commandName = (_b = args.shift()) === null || _b === void 0 ? void 0 : _b.toLowerCase();
+        // If no command is found, return
+        if (!commandName)
+            return;
+        // Check if the command exists
+        if (!commands.has(commandName))
+            return;
+        try {
+            // Execute the command
+            commands.get(commandName).execute(message, args, { reactionCounts });
+        }
+        catch (error) {
+            console.error(error);
+            message.reply('There was an error trying to execute that command!');
+        }
     }
 }));
 // Listen for reactions
@@ -295,30 +316,26 @@ client.on('messageReactionAdd', (reaction, user) => __awaiter(void 0, void 0, vo
             return;
         }
     }
-    // Now reaction should be a full MessageReaction
-    // Check if the reaction is in the target channel (1364771923116163093)
+    // Bỏ qua tất cả reaction không thuộc kênh mục tiêu
     const channelId = reaction.message.channelId;
-    console.log(`Reaction detected in channel: ${channelId}, target channel: ${config_1.config.targetChannelId}`);
-    if (channelId === config_1.config.targetChannelId) {
-        console.log(`Counting reaction in target channel: ${config_1.config.targetChannelId}`);
-        // Track this reaction
-        const messageId = reaction.message.id;
-        if (!reactionCounts.has(messageId)) {
-            reactionCounts.set(messageId, []);
-        }
-        const messageReactions = reactionCounts.get(messageId);
-        const userIndex = messageReactions.findIndex(r => r.userId === user.id);
-        if (userIndex >= 0) {
-            messageReactions[userIndex].count++;
-            console.log(`Incremented reaction count for user ${user.id} to ${messageReactions[userIndex].count}`);
-        }
-        else {
-            messageReactions.push({ userId: user.id, count: 1 });
-            console.log(`Added first reaction for user ${user.id}`);
-        }
+    if (channelId !== config_1.config.targetChannelId) {
+        return;
+    }
+    console.log(`Counting reaction in target channel: ${config_1.config.targetChannelId}`);
+    // Track this reaction
+    const messageId = reaction.message.id;
+    if (!reactionCounts.has(messageId)) {
+        reactionCounts.set(messageId, []);
+    }
+    const messageReactions = reactionCounts.get(messageId);
+    const userIndex = messageReactions.findIndex(r => r.userId === user.id);
+    if (userIndex >= 0) {
+        messageReactions[userIndex].count++;
+        console.log(`Incremented reaction count for user ${user.id} to ${messageReactions[userIndex].count}`);
     }
     else {
-        console.log(`Ignoring reaction in channel ${channelId} - not the target channel`);
+        messageReactions.push({ userId: user.id, count: 1 });
+        console.log(`Added first reaction for user ${user.id}`);
     }
 }));
 // Utility function to check if a URL is an image
